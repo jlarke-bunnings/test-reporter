@@ -20,6 +20,9 @@ import {normalizeDirPath, normalizeFilePath} from './utils/path-utils'
 import {getCheckRunContext} from './utils/github-utils'
 import {Icon} from './utils/markdown-utils'
 
+const MAX_CHECK_RUN_CONTENT_LENGTH = 65535
+const MAX_JOB_SUMMARY_LENGTH = 1048576
+
 async function main(): Promise<void> {
   try {
     const testReporter = new TestReporter()
@@ -41,6 +44,7 @@ class TestReporter {
   readonly failOnError = core.getInput('fail-on-error', {required: true}) === 'true'
   readonly workDirInput = core.getInput('working-directory', {required: false})
   readonly onlySummary = core.getInput('only-summary', {required: false}) === 'true'
+  readonly useJobSummary = core.getInput('use-job-summary', {required: true}) === 'true'
   readonly token = core.getInput('token', {required: true})
   readonly octokit: InstanceType<typeof GitHub>
   readonly context = getCheckRunContext()
@@ -153,45 +157,58 @@ class TestReporter {
       results.push(tr)
     }
 
-    core.info(`Creating check run ${name}`)
-    const createResp = await this.octokit.checks.create({
-      head_sha: this.context.sha,
-      name,
-      status: 'in_progress',
-      output: {
-        title: name,
-        summary: ''
-      },
-      ...github.context.repo
-    })
+    let baseUrl = ''
+    let checkRunId = 0
+
+    if (!this.useJobSummary) {
+      core.info(`Creating check run ${name}`)
+
+      const createResp = await this.octokit.checks.create({
+        head_sha: this.context.sha,
+        name,
+        status: 'in_progress',
+        output: {
+          title: name,
+          summary: ''
+        },
+        ...github.context.repo
+      })
+
+      baseUrl = createResp.data.html_url
+      checkRunId = createResp.data.id
+    }
 
     core.info('Creating report summary')
     const {listSuites, listTests, onlySummary} = this
-    const baseUrl = createResp.data.html_url
-    const summary = getReport(results, {listSuites, listTests, baseUrl, onlySummary})
+    const maxLength = this.useJobSummary ? MAX_JOB_SUMMARY_LENGTH : MAX_CHECK_RUN_CONTENT_LENGTH
+    const summary = getReport(results, {listSuites, listTests, baseUrl, onlySummary, maxLength})
 
-    core.info('Creating annotations')
-    const annotations = getAnnotations(results, this.maxAnnotations)
+    if (this.useJobSummary) {
+      await core.summary.addRaw(summary).write()
+    } else {
+      core.info('Creating annotations')
+      const annotations = getAnnotations(results, this.maxAnnotations)
 
-    const isFailed = results.some(tr => tr.result === 'failed')
-    const conclusion = isFailed ? 'failure' : 'success'
-    const icon = isFailed ? Icon.fail : Icon.success
+      const isFailed = results.some(tr => tr.result === 'failed')
+      const conclusion = isFailed ? 'failure' : 'success'
+      const icon = isFailed ? Icon.fail : Icon.success
 
-    core.info(`Updating check run conclusion (${conclusion}) and output`)
-    const resp = await this.octokit.checks.update({
-      check_run_id: createResp.data.id,
-      conclusion,
-      status: 'completed',
-      output: {
-        title: `${name} ${icon}`,
-        summary,
-        annotations
-      },
-      ...github.context.repo
-    })
-    core.info(`Check run create response: ${resp.status}`)
-    core.info(`Check run URL: ${resp.data.url}`)
-    core.info(`Check run HTML: ${resp.data.html_url}`)
+      core.info(`Updating check run conclusion (${conclusion}) and output`)
+      const resp = await this.octokit.checks.update({
+        check_run_id: checkRunId,
+        conclusion,
+        status: 'completed',
+        output: {
+          title: `${name} ${icon}`,
+          summary,
+          annotations
+        },
+        ...github.context.repo
+      })
+      core.info(`Check run create response: ${resp.status}`)
+      core.info(`Check run URL: ${resp.data.url}`)
+      core.info(`Check run HTML: ${resp.data.html_url}`)
+    }
 
     return results
   }

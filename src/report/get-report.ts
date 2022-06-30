@@ -4,13 +4,12 @@ import {Align, formatTime, Icon, link, table} from '../utils/markdown-utils'
 import {getFirstNonEmptyLine} from '../utils/parse-utils'
 import {slug} from '../utils/slugger'
 
-const MAX_REPORT_LENGTH = 65535
-
 export interface ReportOptions {
   listSuites: 'all' | 'failed'
   listTests: 'all' | 'failed' | 'none'
   baseUrl: string
   onlySummary: boolean
+  maxLength?: number
 }
 
 const defaultOptions: ReportOptions = {
@@ -29,29 +28,27 @@ export function getReport(results: TestRunResult[], options: ReportOptions = def
   let lines = renderReport(results, opts)
   let report = lines.join('\n')
 
-  if (getByteLength(report) <= MAX_REPORT_LENGTH) {
-    return report
-  }
+  if (!opts.maxLength || getByteLength(report) <= opts.maxLength) return report
 
   if (opts.listTests === 'all') {
     core.info("Test report summary is too big - setting 'listTests' to 'failed'")
     opts.listTests = 'failed'
     lines = renderReport(results, opts)
     report = lines.join('\n')
-    if (getByteLength(report) <= MAX_REPORT_LENGTH) {
+    if (getByteLength(report) <= opts.maxLength) {
       return report
     }
   }
 
-  core.warning(`Test report summary exceeded limit of ${MAX_REPORT_LENGTH} bytes and will be trimmed`)
-  return trimReport(lines)
+  core.warning(`Test report summary exceeded limit of ${opts.maxLength} bytes and will be trimmed`)
+  return trimReport(lines, opts.maxLength)
 }
 
-function trimReport(lines: string[]): string {
+function trimReport(lines: string[], maxLength: number): string {
   const closingBlock = '```'
-  const errorMsg = `**Report exceeded GitHub limit of ${MAX_REPORT_LENGTH} bytes and has been trimmed**`
+  const errorMsg = `**Report exceeded GitHub limit of ${maxLength} bytes and has been trimmed**`
   const maxErrorMsgLength = closingBlock.length + errorMsg.length + 2
-  const maxReportLength = MAX_REPORT_LENGTH - maxErrorMsgLength
+  const maxReportLength = maxLength - maxErrorMsgLength
 
   let reportLength = 0
   let codeBlock = false
